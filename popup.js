@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
   migrateAndLoadSettings();
   setupTabs();
   document.getElementById('provider').addEventListener('change', (e) => updateModelHint(e.target.value));
+  document.getElementById('mdMode').addEventListener('change', (e) => updateMdModeHint(e.target.value));
   document.getElementById('toggleKey').addEventListener('click', toggleKeyVisibility);
   document.getElementById('saveBtn').addEventListener('click', saveSettings);
   document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
@@ -147,6 +148,7 @@ async function migrateAndLoadSettings() {
   document.getElementById('autoDownloadMd').checked = syncData.autoDownloadMd;
   document.getElementById('aiEnabled').checked = syncData.aiEnabled !== false;
   updateModelHint(syncData.provider);
+  updateMdModeHint(syncData.mdMode || 'tldr');
   toggleSavePathVisibility();
   toggleAiFields();
 
@@ -295,6 +297,21 @@ function updateModelHint(provider) {
     '\u9ED8\u8BA4: ' + (DEFAULT_MODELS[provider] || '');
 }
 
+function updateMdModeHint(mode) {
+  var hintEl = document.getElementById('mdModeHint');
+  if (!hintEl) return;
+
+  if (mode === 'original') {
+    hintEl.textContent = '原文模式保留 TLDR + 完整原文';
+    return;
+  }
+  if (mode === 'obsidian') {
+    hintEl.textContent = 'Obsidian 模式输出 #标签 + 一句话标题 + 原文';
+    return;
+  }
+  hintEl.textContent = 'TLDR 模式生成 AI 摘要并附带原文';
+}
+
 function toggleKeyVisibility() {
   const input = document.getElementById('apiKey');
   input.type = input.type === 'password' ? 'text' : 'password';
@@ -307,7 +324,7 @@ async function saveSettings() {
 
     var mdMode = document.getElementById('mdMode').value;
     var aiEnabled = document.getElementById('aiEnabled').checked;
-    if (!apiKeyPlain && mdMode !== 'original' && aiEnabled) {
+    if (!apiKeyPlain && aiEnabled) {
       showStatus('\u8BF7\u586B\u5199 API Key', 'error');
       return;
     }

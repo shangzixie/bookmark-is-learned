@@ -87,7 +87,7 @@
             return;
           }
           if (response?.success) {
-            if (response.mode === 'raw') {
+            if (response.mode === 'raw' || response.mode === 'obsidian_raw') {
               updateCard(cardId, '已保存原文到 Markdown', false, tweetData.tweetUrl);
             } else {
               updateCard(cardId, response.tldr, false, tweetData.tweetUrl);

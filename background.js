@@ -18,6 +18,13 @@ const PROVIDER_DEFAULT_ENDPOINTS = {
   kimi: 'https://api.moonshot.cn/v1/chat/completions',
   zhipu: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
 };
+const OBSIDIAN_ALLOWED_TAGS = [
+  '创业/技术',
+  '创业/创业思想',
+  '投资/投资知识',
+  '投资/复盘分析',
+  '生活',
+];
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GENERATE_TLDR') {
@@ -30,7 +37,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         var prefs = await chrome.storage.sync.get({ autoDownloadMd: true });
         if (prefs.autoDownloadMd) {
           var senderTabId = sender && sender.tab ? sender.tab.id : null;
-          saveMarkdownFile(message.tweetData, result.tldr, result.articleContent, result.quotedFullContent, result.isArticle, result.mode, senderTabId);
+          saveMarkdownFile(
+            message.tweetData,
+            result.tldr,
+            result.articleContent,
+            result.quotedFullContent,
+            result.isArticle,
+            result.mode,
+            senderTabId,
+            result.obsidianTag,
+            result.obsidianTitle
+          );
         }
 
         sendResponse({ success: true, tldr: result.tldr, mode: result.mode });
@@ -105,10 +122,29 @@ async function saveToHistory(tweetData, tldr, isArticle) {
 
 // ── Markdown file saving (native host + chrome.downloads fallback) ───────────
 
-async function saveMarkdownFile(tweetData, tldr, articleContent, quotedFullContent, isArticle, mode, senderTabId) {
+async function saveMarkdownFile(
+  tweetData,
+  tldr,
+  articleContent,
+  quotedFullContent,
+  isArticle,
+  mode,
+  senderTabId,
+  obsidianTag,
+  obsidianTitle
+) {
   try {
-    var markdown = buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent, isArticle, mode);
-    var fileName = buildFileName(tweetData, articleContent, isArticle);
+    var markdown = buildMarkdownContent(
+      tweetData,
+      tldr,
+      articleContent,
+      quotedFullContent,
+      isArticle,
+      mode,
+      obsidianTag,
+      obsidianTitle
+    );
+    var fileName = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle);
 
     // 1. Primary: native messaging host (writes to any user-chosen folder)
     var written = await writeViaNativeHost(markdown, fileName);
@@ -280,7 +316,8 @@ function stripArticleMetadataPrefix(body, title, author) {
 }
 
 // Build the markdown content string from tweet data and TLDR result
-function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent, isArticle, mode) {
+function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent, isArticle, mode, obsidianTag, obsidianTitle) {
+  var isObsidianMode = (mode === 'obsidian' || mode === 'obsidian_raw');
   var author = tweetData.author || 'unknown';
   var tweetUrl = tweetData.tweetUrl || tweetData.url || '';
   var now = new Date();
@@ -291,6 +328,39 @@ function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent
     + String(now.getMinutes()).padStart(2, '0');
 
   var lines = [];
+
+  if (isObsidianMode) {
+    var finalObsidianTag = normalizeObsidianTag(obsidianTag)
+      || selectObsidianTag(tweetData, tldr, articleContent, quotedFullContent);
+    lines.push('#' + finalObsidianTag);
+    lines.push('');
+    lines.push('> **Author**: ' + author);
+    lines.push('> **Source**: ' + tweetUrl);
+    lines.push('> **Date**: ' + dateStr);
+    var obsidianMetrics = tweetData.metrics;
+    if (obsidianMetrics) {
+      lines.push('> **Replies**: ' + (obsidianMetrics.replies || '0')
+        + ' · **Retweets**: ' + (obsidianMetrics.retweets || '0')
+        + ' · **Likes**: ' + (obsidianMetrics.likes || '0')
+        + ' · **Views**: ' + (obsidianMetrics.views || '0'));
+    }
+    lines.push('');
+    // Obsidian mode is based on original mode: keep TLDR + original content.
+    if (mode !== 'obsidian_raw') {
+      lines.push('## TLDR');
+      lines.push('');
+      lines.push(tldr || '');
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+    }
+    lines.push('## Original Content');
+    lines.push('');
+    appendOriginalContentSection(lines, tweetData, articleContent, quotedFullContent, isArticle, author, {
+      includeArticleHeading: false,
+    });
+    return lines.join('\n');
+  }
 
   // Title
   var title = isArticle && articleContent && articleContent.title
@@ -331,61 +401,165 @@ function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent
   if (mode === 'original' || mode === 'raw') {
     lines.push('## Original Content');
     lines.push('');
-
-    if (isArticle && articleContent) {
-      var cleanBody = stripArticleMetadataPrefix(articleContent.body, articleContent.title, author);
-      if (articleContent.title) {
-        lines.push('### ' + articleContent.title);
-        lines.push('');
-      }
-      lines.push(cleanBody);
-    } else if (tweetData.text) {
-      lines.push(tweetData.text);
-    } else if (tweetData.cardText) {
-      lines.push(tweetData.cardText);
-    } else if (tweetData.fallbackText) {
-      // fallbackText from X Articles may also contain metadata prefix
-      lines.push(stripArticleMetadataPrefix(tweetData.fallbackText, '', author));
-    }
-    lines.push('');
-
-    // Quoted content (if present)
-    var quotedBody = quotedFullContent && quotedFullContent.body
-      ? quotedFullContent.body
-      : (tweetData.quotedText || '');
-    if (quotedBody) {
-      var quotedBy = tweetData.quotedAuthor || 'unknown';
-      lines.push('### Quoted Content (by ' + quotedBy + ')');
-      lines.push('');
-      lines.push(quotedBody);
-      lines.push('');
-    }
-
-    // Card text (if separate from main text)
-    if (!isArticle && tweetData.text && tweetData.cardText) {
-      lines.push('### Attached Card');
-      lines.push('');
-      lines.push(tweetData.cardText);
-      lines.push('');
-    }
-
-    if (tweetData.referencedUrls && tweetData.referencedUrls.length > 0) {
-      lines.push('### Referenced Links');
-      lines.push('');
-      for (var i = 0; i < tweetData.referencedUrls.length; i++) {
-        var linkUrl = tweetData.referencedUrls[i];
-        lines.push('- [' + linkUrl + '](' + linkUrl + ')');
-      }
-      lines.push('');
-    }
+    appendOriginalContentSection(lines, tweetData, articleContent, quotedFullContent, isArticle, author);
   }
 
   return lines.join('\n');
 }
 
+function appendOriginalContentSection(lines, tweetData, articleContent, quotedFullContent, isArticle, author, options) {
+  var opts = options || {};
+  var includeArticleHeading = opts.includeArticleHeading !== false;
+  if (isArticle && articleContent) {
+    var cleanBody = stripArticleMetadataPrefix(articleContent.body, articleContent.title, author);
+    if (articleContent.title && includeArticleHeading) {
+      lines.push('### ' + articleContent.title);
+      lines.push('');
+    }
+    lines.push(cleanBody);
+  } else if (tweetData.text) {
+    lines.push(tweetData.text);
+  } else if (tweetData.cardText) {
+    lines.push(tweetData.cardText);
+  } else if (tweetData.fallbackText) {
+    // fallbackText from X Articles may also contain metadata prefix
+    lines.push(stripArticleMetadataPrefix(tweetData.fallbackText, '', author));
+  }
+  lines.push('');
+
+  // Quoted content (if present)
+  var quotedBody = quotedFullContent && quotedFullContent.body
+    ? quotedFullContent.body
+    : (tweetData.quotedText || '');
+  if (quotedBody) {
+    var quotedBy = tweetData.quotedAuthor || 'unknown';
+    lines.push('### Quoted Content (by ' + quotedBy + ')');
+    lines.push('');
+    lines.push(quotedBody);
+    lines.push('');
+  }
+
+  // Card text (if separate from main text)
+  if (!isArticle && tweetData.text && tweetData.cardText) {
+    lines.push('### Attached Card');
+    lines.push('');
+    lines.push(tweetData.cardText);
+    lines.push('');
+  }
+
+  if (tweetData.referencedUrls && tweetData.referencedUrls.length > 0) {
+    lines.push('### Referenced Links');
+    lines.push('');
+    for (var i = 0; i < tweetData.referencedUrls.length; i++) {
+      var linkUrl = tweetData.referencedUrls[i];
+      lines.push('- [' + linkUrl + '](' + linkUrl + ')');
+    }
+    lines.push('');
+  }
+}
+
+function selectObsidianTag(tweetData, tldr, articleContent, quotedFullContent) {
+  var corpus = [
+    tldr || '',
+    tweetData.text || '',
+    tweetData.cardText || '',
+    tweetData.fallbackText || '',
+    (articleContent && articleContent.title) || '',
+    (articleContent && articleContent.body) || '',
+    (quotedFullContent && quotedFullContent.body) || '',
+    tweetData.quotedText || '',
+  ].join('\n').toLowerCase();
+
+  if (/(复盘|回测|回撤|盈亏|仓位|盘后|post[-\s]?mortem|trade review)/i.test(corpus)) {
+    return '投资/复盘分析';
+  }
+  if (/(投资|估值|财报|股票|基金|债券|portfolio|market|macro|alpha|\bpe\b|\bpb\b)/i.test(corpus)) {
+    return '投资/投资知识';
+  }
+  if (/(生活|健康|家庭|旅行|习惯|睡眠|健身|life|wellbeing|mindset)/i.test(corpus)) {
+    return '生活';
+  }
+  if (/(创业|商业模式|增长|用户|市场|销售|获客|经营|管理|founder|startup|saas|gtm)/i.test(corpus)) {
+    return '创业/创业思想';
+  }
+  if (/(ai|agent|llm|prompt|模型|代码|编程|工程|开源|架构|算法|数据库|api|sdk|python|javascript|typescript|rust|go)/i.test(corpus)) {
+    return '创业/技术';
+  }
+  return OBSIDIAN_ALLOWED_TAGS[0];
+}
+
+function normalizeObsidianTag(tag) {
+  if (!tag) return '';
+  var clean = String(tag).trim().replace(/^#+/, '');
+  return OBSIDIAN_ALLOWED_TAGS.includes(clean) ? clean : '';
+}
+
+function normalizeObsidianTitle(title) {
+  if (!title) return '';
+  var clean = String(title)
+    .replace(/\r?\n+/g, ' ')
+    .replace(/^#+\s*/, '')
+    .replace(/^\s*["'`]+|["'`]+\s*$/g, '')
+    .trim();
+  if (!clean) return '';
+  return clean.length > 48 ? clean.slice(0, 48).trim() : clean;
+}
+
+function buildObsidianTitle(tweetData, tldr, articleContent, isArticle) {
+  var source = '';
+  if (tldr) {
+    source = tldr;
+  } else if (isArticle && articleContent && articleContent.body) {
+    source = articleContent.body;
+  } else {
+    source = tweetData.text || tweetData.cardText || tweetData.fallbackText || '';
+  }
+
+  var sentence = extractFirstMeaningfulSentence(source);
+  if (!sentence && isArticle && articleContent && articleContent.title) {
+    sentence = extractFirstMeaningfulSentence(articleContent.title);
+  }
+  if (!sentence) sentence = '内容摘要';
+  return sentence;
+}
+
+function extractFirstMeaningfulSentence(text) {
+  if (!text) return '';
+
+  var cleaned = text
+    .replace(/\r/g, '\n')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/`/g, '')
+    .replace(/^#+\s*/gm, '')
+    .replace(/^[>\-\u2022]\s*/gm, '');
+
+  var lines = cleaned.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line || line.length < 6) continue;
+    if (/^(tldr|key points|fact check|credibility|quoted content|attached card|referenced links)[:：]?$/i.test(line)) continue;
+    if (/^https?:\/\//i.test(line)) continue;
+
+    var firstPart = line.split(/[。！？.!?]/)[0].trim();
+    var candidate = (firstPart || line).trim();
+
+    candidate = candidate
+      .replace(/^by\s+[^:：-]+[:：-]\s*/i, '')
+      .replace(/^\d{4}[-/年]\d{1,2}([-/月]\d{1,2})?.*$/, '')
+      .replace(/^\s*[@#][^\s]+\s*/, '')
+      .trim();
+
+    if (!candidate) continue;
+    if (candidate.length > 48) candidate = candidate.slice(0, 48).trim();
+    return candidate;
+  }
+  return '';
+}
+
 // Build a sanitized filename like "handle-title-20260211-143022.md"
-// Format: x-account handle, title (article title or tweet excerpt), timestamp
-function buildFileName(tweetData, articleContent, isArticle) {
+// Format: x-account handle, title (obsidian title / article title / tweet excerpt), timestamp
+function buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle) {
   // Extract X handle from tweet URL (e.g., "https://x.com/elonmusk/status/123")
   var handle = 'unknown';
   var tweetUrl = tweetData.tweetUrl || tweetData.url || '';
@@ -397,7 +571,9 @@ function buildFileName(tweetData, articleContent, isArticle) {
 
   // Derive a short title from article title or tweet text
   var title = '';
-  if (isArticle && articleContent && articleContent.title) {
+  if ((mode === 'obsidian' || mode === 'obsidian_raw') && obsidianTitle) {
+    title = obsidianTitle;
+  } else if (isArticle && articleContent && articleContent.title) {
     title = articleContent.title;
   } else {
     title = tweetData.text || tweetData.cardText || tweetData.fallbackText || '';
@@ -425,6 +601,11 @@ function buildFileName(tweetData, articleContent, isArticle) {
     if (lastSpace > 20) safeTitle = safeTitle.slice(0, lastSpace);
   }
   if (!safeTitle) safeTitle = 'untitled';
+
+  // Obsidian mode prefers clean, title-only filenames.
+  if (mode === 'obsidian' || mode === 'obsidian_raw') {
+    return safeTitle + '.md';
+  }
 
   var now = new Date();
   var timeStamp = now.getFullYear()
@@ -504,9 +685,19 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
 
   const isArticle = !!(articleContent && articleContent.body);
 
-  // If AI is disabled, skip LLM call — return raw content for markdown-only saving
+  // If AI is disabled, skip LLM call — raw mode keeps old format, while
+  // obsidian mode still uses Obsidian markdown layout without TLDR.
   if (!settings.aiEnabled) {
-    return { tldr: '', articleContent, quotedFullContent, isArticle, mode: 'raw' };
+    var disabledMode = settings.mdMode === 'obsidian' ? 'obsidian_raw' : 'raw';
+    return {
+      tldr: '',
+      articleContent,
+      quotedFullContent,
+      isArticle,
+      mode: disabledMode,
+      obsidianTag: '',
+      obsidianTitle: '',
+    };
   }
 
   // Generate TLDR via LLM — both modes show it in the popup card,
@@ -527,11 +718,21 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
   }
 
   const hasQuotedFull = !!(quotedFullContent && quotedFullContent.body);
-  const prompt = buildPrompt(tweetData, articleContent, quotedFullContent, settings.language, isArticle, hasQuotedFull);
+  const prompt = buildPrompt(
+    tweetData,
+    articleContent,
+    quotedFullContent,
+    settings.language,
+    isArticle,
+    hasQuotedFull,
+    settings.mdMode
+  );
   const maxTokens = (isArticle || hasQuotedFull) ? 2000 : 1000;
   const endpoint = await resolveApiEndpoint(settings.provider, settings.baseUrl);
 
   let tldr;
+  let obsidianTag = '';
+  let obsidianTitle = '';
   switch (settings.provider) {
     case 'openai':
       tldr = await callOpenAI(apiKey, endpoint, settings.model || 'gpt-4o-mini', prompt, maxTokens);
@@ -549,7 +750,22 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
       throw new Error('不支持的模型: ' + settings.provider);
   }
 
-  return { tldr, articleContent, quotedFullContent, isArticle, mode: settings.mdMode };
+  if (settings.mdMode === 'obsidian') {
+    var parsedObsidian = parseObsidianAiOutput(tldr, tweetData, articleContent, quotedFullContent, isArticle);
+    obsidianTag = parsedObsidian.tag;
+    obsidianTitle = parsedObsidian.title;
+    tldr = parsedObsidian.summary;
+  }
+
+  return {
+    tldr,
+    articleContent,
+    quotedFullContent,
+    isArticle,
+    mode: settings.mdMode,
+    obsidianTag: obsidianTag,
+    obsidianTitle: obsidianTitle,
+  };
 }
 
 async function resolveApiEndpoint(provider, baseUrl) {
@@ -796,7 +1012,7 @@ function extractPageContent(expectedId, isArticleUrl) {
 
 // ── Prompt building ─────────────────────────────────────────────────────────────
 
-function buildPrompt(tweetData, articleContent, quotedFullContent, language, isArticle, hasQuotedFull) {
+function buildPrompt(tweetData, articleContent, quotedFullContent, language, isArticle, hasQuotedFull, mode) {
   var langMap = {
     'zh-CN': '简体中文',
     'zh-TW': '繁體中文',
@@ -836,6 +1052,46 @@ function buildPrompt(tweetData, articleContent, quotedFullContent, language, isA
 
   if (!isArticle && tweetData.text && tweetData.cardText) {
     userContent += '\n\nAttached card:\n' + tweetData.cardText;
+  }
+
+  if (mode === 'obsidian') {
+    var obsidianTldrGuide = '';
+    if (isArticle) {
+      obsidianTldrGuide = 'In OBSIDIAN_TLDR, produce a thorough long-form summary with this structure:\n'
+        + '**TLDR** — one sentence core thesis.\n'
+        + '**Key Value Points** — 5-8 actionable insights.\n'
+        + '**Process / Steps** — include only if instructional.\n'
+        + '**Why It Matters** — 1-2 sentences.\n'
+        + '**Fact Check** with credibility score.';
+    } else if (hasQuotedFull) {
+      obsidianTldrGuide = 'In OBSIDIAN_TLDR, summarize both the bookmarked tweet and the quoted long post using this structure:\n'
+        + '**TLDR**\n'
+        + '**Quoted Content Summary**\n'
+        + '**Process / Steps** (if applicable)\n'
+        + '**Commenter\'s Take**\n'
+        + '**Fact Check** with credibility score.';
+    } else {
+      obsidianTldrGuide = 'In OBSIDIAN_TLDR, provide a valuable structured tweet summary with this structure:\n'
+        + '**TLDR**\n'
+        + '**Key Points**\n'
+        + '**Process / Steps** (if applicable)\n'
+        + '**Fact Check** with credibility score.';
+    }
+
+    var obsidianInstruction = 'You are organizing a note for Obsidian. '
+      + 'Respond in ' + langName + ' and strictly follow this exact output envelope:\n'
+      + 'OBSIDIAN_TAG: <one exact value from this list only: '
+      + OBSIDIAN_ALLOWED_TAGS.join(', ')
+      + '>\n'
+      + 'OBSIDIAN_TITLE: <one concise sentence, content-only, no author/date/source>\n'
+      + 'OBSIDIAN_TLDR:\n'
+      + '<structured markdown summary>\n\n'
+      + obsidianTldrGuide + '\n\n'
+      + 'Rules:\n'
+      + '- Do not invent a new tag.\n'
+      + '- OBSIDIAN_TITLE must be plain text in one sentence.\n'
+      + '- Keep markdown structure inside OBSIDIAN_TLDR.';
+    return { system: obsidianInstruction, user: userContent };
   }
 
   var factCheckBlock = '\n\n'
@@ -893,6 +1149,58 @@ function buildPrompt(tweetData, articleContent, quotedFullContent, language, isA
   }
 
   return { system: systemPrompt, user: userContent };
+}
+
+function parseObsidianAiOutput(aiText, tweetData, articleContent, quotedFullContent, isArticle) {
+  var text = (aiText || '').trim();
+  var lines = text.split('\n');
+  var tag = '';
+  var title = '';
+  var summaryLines = [];
+  var captureSummary = false;
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line) {
+      if (captureSummary) summaryLines.push('');
+      continue;
+    }
+
+    var tagMatch = line.match(/^OBSIDIAN_TAG\s*:\s*(.+)$/i);
+    if (tagMatch) {
+      tag = normalizeObsidianTag(tagMatch[1]);
+      continue;
+    }
+
+    var titleMatch = line.match(/^OBSIDIAN_TITLE\s*:\s*(.+)$/i);
+    if (titleMatch) {
+      title = normalizeObsidianTitle(titleMatch[1]);
+      continue;
+    }
+
+    if (/^OBSIDIAN_(TLDR|SUMMARY)\s*:?\s*$/i.test(line)) {
+      captureSummary = true;
+      continue;
+    }
+
+    if (captureSummary) summaryLines.push(lines[i]);
+  }
+
+  var summary = summaryLines.join('\n').trim();
+  if (!summary) {
+    summary = text
+      .replace(/^OBSIDIAN_TAG\s*:.+$/gim, '')
+      .replace(/^OBSIDIAN_TITLE\s*:.+$/gim, '')
+      .replace(/^OBSIDIAN_TLDR\s*:?\s*$/gim, '')
+      .replace(/^OBSIDIAN_SUMMARY\s*:?\s*$/gim, '')
+      .trim();
+  }
+  if (!summary) summary = extractFirstMeaningfulSentence(text) || '已生成 Obsidian 笔记';
+
+  if (!tag) tag = selectObsidianTag(tweetData, summary, articleContent, quotedFullContent);
+  if (!title) title = buildObsidianTitle(tweetData, summary, articleContent, isArticle);
+
+  return { tag: tag, title: title, summary: summary };
 }
 
 // ── LLM API calls ───────────────────────────────────────────────────────────────

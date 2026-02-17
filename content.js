@@ -6,12 +6,16 @@
   'use strict';
 
   const MAX_VISIBLE_CARDS = 3;
+  const hostname = window.location.hostname.toLowerCase();
+  const isXHost = hostname === 'x.com' || hostname === 'twitter.com' || hostname === 'www.twitter.com';
+  const isWeChatHost = hostname === 'mp.weixin.qq.com';
   let cardContainer = null;
   let activeCards = []; // { id, element, timerId }
   let cardSeq = 0;
   let currentTheme = 'auto'; // 'auto' | 'light' | 'dark'
   let currentMode = 'tldr'; // 'tldr' | 'original'
   let aiEnabled = true;
+  let wechatButton = null;
 
   // ── Theme & mode management ───────────────────────────────────────────────
 
@@ -44,24 +48,93 @@
     cardContainer.classList.add('btl-' + currentTheme);
   }
 
-  // ── Bookmark click detection ──────────────────────────────────────────────
+  initPageEntry();
 
-  document.addEventListener('click', (event) => {
-    const bookmarkBtn = findAncestorByTestId(event.target, 'bookmark');
-    if (!bookmarkBtn) return;
+  function initPageEntry() {
+    if (isXHost) initXBookmarkListener();
+    if (isWeChatHost) initWeChatFloatingButton();
+  }
 
-    // Only fire when adding a bookmark, not when removing one.
-    // X uses "removeBookmark" for the un-bookmark button.
-    const removeBtn = findAncestorByTestId(event.target, 'removeBookmark');
-    if (removeBtn) return;
+  // ── Bookmark click detection (X) ──────────────────────────────────────────
 
-    const article = bookmarkBtn.closest('article[data-testid="tweet"]');
-    if (!article) return;
+  function initXBookmarkListener() {
+    document.addEventListener('click', (event) => {
+      const bookmarkBtn = findAncestorByTestId(event.target, 'bookmark');
+      if (!bookmarkBtn) return;
 
+      // Only fire when adding a bookmark, not when removing one.
+      // X uses "removeBookmark" for the un-bookmark button.
+      const removeBtn = findAncestorByTestId(event.target, 'removeBookmark');
+      if (removeBtn) return;
+
+      const article = bookmarkBtn.closest('article[data-testid="tweet"]');
+      if (!article) return;
+
+      const cardId = 'btl-' + (++cardSeq);
+      createLoadingCard(cardId);
+      processBookmark(article, cardId);
+    }, true);
+  }
+
+  // ── Floating trigger (WeChat public articles) ─────────────────────────────
+
+  function initWeChatFloatingButton() {
+    if (wechatButton || document.getElementById('btl-wechat-trigger')) return;
+
+    wechatButton = document.createElement('button');
+    wechatButton.id = 'btl-wechat-trigger';
+    wechatButton.className = 'btl-wechat-trigger';
+    wechatButton.type = 'button';
+    wechatButton.textContent = '保存到就是学到';
+    wechatButton.title = '提取本文并生成摘要';
+    wechatButton.addEventListener('click', onWeChatTriggerClick);
+
+    document.body.appendChild(wechatButton);
+  }
+
+  function setWeChatButtonState(state) {
+    if (!wechatButton) return;
+    if (state === 'loading') {
+      wechatButton.disabled = true;
+      wechatButton.classList.add('btl-wechat-trigger-loading');
+      wechatButton.textContent = aiEnabled ? '处理中...' : '保存中...';
+      return;
+    }
+    wechatButton.disabled = false;
+    wechatButton.classList.remove('btl-wechat-trigger-loading');
+    wechatButton.textContent = '保存到就是学到';
+  }
+
+  async function onWeChatTriggerClick() {
     const cardId = 'btl-' + (++cardSeq);
     createLoadingCard(cardId);
-    processBookmark(article, cardId);
-  }, true);
+    setWeChatButtonState('loading');
+    try {
+      const wechatData = extractWeChatArticleContent();
+      chrome.runtime.sendMessage(
+        { type: 'GENERATE_TLDR', tweetData: wechatData, articleUrl: null, quotedTweetUrl: null },
+        (response) => {
+          setWeChatButtonState('idle');
+          if (chrome.runtime.lastError) {
+            updateCard(cardId, '扩展连接失败，请刷新页面', true);
+            return;
+          }
+          if (response?.success) {
+            if (response.mode === 'raw' || response.mode === 'obsidian_raw') {
+              updateCard(cardId, '已保存原文到 Markdown', false, wechatData.tweetUrl);
+            } else {
+              updateCard(cardId, response.tldr, false, wechatData.tweetUrl);
+            }
+          } else {
+            updateCard(cardId, response?.error || '生成摘要失败', true);
+          }
+        }
+      );
+    } catch (err) {
+      setWeChatButtonState('idle');
+      updateCard(cardId, '未能提取公众号正文，请先完成页面验证后重试', true);
+    }
+  }
 
   // ── Main async flow (per card) ────────────────────────────────────────────
 
@@ -110,6 +183,147 @@
       el = el.parentElement;
     }
     return null;
+  }
+
+  function extractWeChatArticleContent() {
+    const titleEl = document.querySelector('#activity-name')
+      || document.querySelector('h1#activity-name')
+      || document.querySelector('h1');
+    const title = titleEl ? titleEl.innerText.trim() : '';
+
+    const authorEl = document.querySelector('#js_name')
+      || document.querySelector('.profile_meta_value')
+      || document.querySelector('.wx_tap_link.js_wx_tap_highlight');
+    const author = authorEl ? authorEl.innerText.trim() : '公众号作者';
+
+    const contentEl = document.querySelector('#js_content')
+      || document.querySelector('.rich_media_content')
+      || document.querySelector('article');
+    if (!contentEl) {
+      throw new Error('content not found');
+    }
+
+    const clone = contentEl.cloneNode(true);
+    clone.querySelectorAll('script, style, noscript, iframe').forEach((el) => el.remove());
+    const media = extractWeChatMediaAssets(clone);
+    const bodyText = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
+    if (!bodyText || bodyText.length < 80) {
+      throw new Error('content too short');
+    }
+
+    const sourceUrl = window.location.href;
+    const text = (title ? (title + '\n\n') : '') + bodyText;
+    const referencedUrls = collectWeChatReferencedUrls(contentEl);
+    for (const v of media.videoAssets) {
+      if (!referencedUrls.includes(v.url)) referencedUrls.push(v.url);
+    }
+
+    return {
+      platform: 'wechat',
+      contentType: 'article',
+      title: title || '微信公众号文章',
+      text: text.slice(0, 15000),
+      author,
+      quotedText: '',
+      quotedAuthor: '',
+      cardText: '',
+      fallbackText: '',
+      tweetUrl: sourceUrl,
+      url: sourceUrl,
+      metrics: null,
+      referencedUrls,
+      imageAssets: media.imageAssets,
+      videoAssets: media.videoAssets,
+    };
+  }
+
+  function extractWeChatMediaAssets(cloneContentEl) {
+    const imageAssets = [];
+    const videoAssets = [];
+    const imageSeen = new Set();
+    const videoSeen = new Set();
+
+    function pushImage(url, alt) {
+      const normalized = normalizeAbsoluteUrl(url);
+      if (!normalized || imageSeen.has(normalized)) return;
+      imageSeen.add(normalized);
+      imageAssets.push({ url: normalized, alt: (alt || '').trim() });
+    }
+
+    function pushVideo(url) {
+      const normalized = normalizeAbsoluteUrl(url);
+      if (!normalized || videoSeen.has(normalized)) return;
+      videoSeen.add(normalized);
+      videoAssets.push({ url: normalized });
+    }
+
+    // Convert video blocks into stable placeholders, avoid grabbing player UI text.
+    const videoBlocks = cloneContentEl.querySelectorAll(
+      'video, .js_video_container, .js_tx_video_container, [data-role="txp_video_container"], iframe[src*="v.qq.com"]'
+    );
+    videoBlocks.forEach((el) => {
+      if (!el || !el.parentNode) return;
+      const src = el.getAttribute('src')
+        || el.getAttribute('data-src')
+        || el.getAttribute('data-url')
+        || el.querySelector?.('source[src]')?.getAttribute('src')
+        || el.querySelector?.('iframe[src]')?.getAttribute('src')
+        || '';
+      if (src) pushVideo(src);
+      var idx = videoAssets.length || 1;
+      var marker = document.createElement('p');
+      marker.textContent = '[视频 ' + idx + ']';
+      el.parentNode.insertBefore(marker, el);
+      el.remove();
+    });
+
+    const imgs = cloneContentEl.querySelectorAll('img');
+    imgs.forEach((img) => {
+      const src = img.getAttribute('data-src')
+        || img.getAttribute('data-backsrc')
+        || img.getAttribute('src')
+        || '';
+      const alt = img.getAttribute('alt') || img.getAttribute('data-alt') || '';
+      pushImage(src, alt);
+
+      if (img.parentNode) {
+        const idx = imageAssets.length || 1;
+        const marker = document.createElement('span');
+        marker.textContent = '[图片 ' + idx + ']';
+        img.parentNode.insertBefore(marker, img);
+        img.remove();
+      }
+    });
+
+    return { imageAssets, videoAssets };
+  }
+
+  function collectWeChatReferencedUrls(contentEl) {
+    const urls = [];
+    const seen = new Set();
+    const links = contentEl.querySelectorAll('a[href]');
+    links.forEach((link) => {
+      const href = link.getAttribute('href') || link.href || '';
+      const normalized = normalizeAbsoluteUrl(href);
+      if (!normalized) return;
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      urls.push(normalized);
+    });
+    return urls;
+  }
+
+  function normalizeAbsoluteUrl(urlLike) {
+    if (!urlLike) return '';
+    var candidate = String(urlLike).trim();
+    if (!candidate) return '';
+    if (candidate.startsWith('//')) candidate = window.location.protocol + candidate;
+    if (candidate.startsWith('javascript:') || candidate.startsWith('#')) return '';
+    try {
+      return new URL(candidate, window.location.href).toString();
+    } catch (_) {
+      return '';
+    }
   }
 
   // ── Show-more expansion ───────────────────────────────────────────────────

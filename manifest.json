@@ -12,6 +12,7 @@
   "host_permissions": [
     "https://x.com/*",
     "https://twitter.com/*",
+    "https://mp.weixin.qq.com/*",
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
     "https://api.moonshot.cn/*",
@@ -25,7 +26,8 @@
     {
       "matches": [
         "https://x.com/*",
-        "https://twitter.com/*"
+        "https://twitter.com/*",
+        "https://mp.weixin.qq.com/*"
       ],
       "js": [
         "content.js"
@@ -51,7 +53,7 @@
   "web_accessible_resources": [
     {
       "resources": ["icons/icon48.png"],
-      "matches": ["https://x.com/*", "https://twitter.com/*"]
+      "matches": ["https://x.com/*", "https://twitter.com/*", "https://mp.weixin.qq.com/*"]
     }
   ]
 }

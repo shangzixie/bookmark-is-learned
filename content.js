@@ -206,7 +206,7 @@
     const clone = contentEl.cloneNode(true);
     clone.querySelectorAll('script, style, noscript, iframe').forEach((el) => el.remove());
     const media = extractWeChatMediaAssets(clone);
-    const bodyText = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
+    const bodyText = htmlToMarkdown(clone).replace(/\n{3,}/g, '\n\n').trim();
     if (!bodyText || bodyText.length < 80) {
       throw new Error('content too short');
     }
@@ -272,7 +272,8 @@
       if (src) pushVideo(src);
       var idx = videoAssets.length || 1;
       var marker = document.createElement('p');
-      marker.textContent = '[视频 ' + idx + ']';
+      var videoUrl = src ? normalizeAbsoluteUrl(src) : '';
+      marker.textContent = videoUrl ? ('[视频 ' + idx + '](' + videoUrl + ')') : ('[视频 ' + idx + '](about:blank)');
       el.parentNode.insertBefore(marker, el);
       el.remove();
     });
@@ -289,7 +290,8 @@
       if (img.parentNode) {
         const idx = imageAssets.length || 1;
         const marker = document.createElement('span');
-        marker.textContent = '[图片 ' + idx + ']';
+        const imageUrl = src ? normalizeAbsoluteUrl(src) : '';
+        marker.textContent = imageUrl ? ('![图片 ' + idx + '](' + imageUrl + ')') : ('![图片 ' + idx + '](about:blank)');
         img.parentNode.insertBefore(marker, img);
         img.remove();
       }
@@ -324,6 +326,83 @@
     } catch (_) {
       return '';
     }
+  }
+
+  function htmlToMarkdown(element) {
+    var result = '';
+    var walker = document.createTreeWalker(
+      element,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+      null,
+      false
+    );
+
+    var node;
+    var lastBlockWasEmpty = false;
+    
+    while ((node = walker.nextNode())) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        var text = node.textContent.replace(/\s+/g, ' ').trim();
+        if (text) {
+          result += text;
+          lastBlockWasEmpty = false;
+        }
+        continue;
+      }
+
+      var tag = node.nodeName.toLowerCase();
+      var parent = node.parentElement;
+      var parentTag = parent ? parent.nodeName.toLowerCase() : '';
+
+      if (tag === 'br') {
+        result += '\n';
+      } else if (['p', 'div', 'section', 'article'].includes(tag)) {
+        if (!lastBlockWasEmpty && result && !result.endsWith('\n')) result += '\n';
+        var textContent = node.innerText.trim();
+        if (textContent) {
+          lastBlockWasEmpty = false;
+        } else {
+          lastBlockWasEmpty = true;
+        }
+      } else if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
+        if (!lastBlockWasEmpty && result) result += '\n';
+        var level = parseInt(tag[1]);
+        result += '#'.repeat(level) + ' ' + node.innerText.trim() + '\n';
+        lastBlockWasEmpty = false;
+      } else if (tag === 'strong' || tag === 'b') {
+        var strongText = node.innerText.trim();
+        if (strongText) result += '**' + strongText + '**';
+      } else if (tag === 'em' || tag === 'i') {
+        var emText = node.innerText.trim();
+        if (emText) result += '_' + emText + '_';
+      } else if (['ul', 'ol'].includes(tag)) {
+        if (!lastBlockWasEmpty && result) result += '\n';
+        var isOrdered = tag === 'ol';
+        var liIndex = 0;
+        var items = node.querySelectorAll(':scope > li');
+        items.forEach(function (li) {
+          liIndex++;
+          var bullet = isOrdered ? (liIndex + '. ') : '- ';
+          result += bullet + li.innerText.trim() + '\n';
+        });
+        lastBlockWasEmpty = false;
+      } else if (tag === 'blockquote') {
+        if (!lastBlockWasEmpty && result) result += '\n';
+        var quoteLines = node.innerText.split('\n');
+        quoteLines.forEach(function (line) {
+          if (line.trim()) result += '> ' + line + '\n';
+        });
+        lastBlockWasEmpty = false;
+      } else if (tag === 'code') {
+        result += '`' + node.innerText + '`';
+      } else if (tag === 'pre') {
+        if (!lastBlockWasEmpty && result) result += '\n';
+        result += '```\n' + node.innerText + '\n```\n';
+        lastBlockWasEmpty = false;
+      }
+    }
+
+    return result.replace(/\n{3,}/g, '\n\n').trim();
   }
 
   // ── Show-more expansion ───────────────────────────────────────────────────

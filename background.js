@@ -135,9 +135,8 @@ async function saveMarkdownFile(
 ) {
   try {
     var fileName = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle);
-    var tweetDataWithMedia = await localizeWechatImages(tweetData, fileName);
     var markdown = buildMarkdownContent(
-      tweetDataWithMedia,
+      tweetData,
       tldr,
       articleContent,
       quotedFullContent,
@@ -278,90 +277,6 @@ async function writeViaDownloads(markdown, fileName) {
     chrome.downloads.onChanged.addListener(onChanged);
     // Safety timeout: resolve after 30s even if no state change fires
     setTimeout(function () { chrome.downloads.onChanged.removeListener(onChanged); cleanupBlob(); resolve(); }, 30000);
-  });
-}
-
-async function localizeWechatImages(tweetData, fileName) {
-  if (!tweetData || tweetData.platform !== 'wechat') return tweetData;
-  var images = Array.isArray(tweetData.imageAssets) ? tweetData.imageAssets : [];
-  if (images.length === 0) return tweetData;
-
-  var localized = [];
-  var baseName = (fileName || 'wechat-article').replace(/\.md$/i, '');
-  var safeBase = baseName
-    .replace(/[\x00-\x1f\x7f]/g, '')
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/^\.+/, '')
-    .trim()
-    .slice(0, 60) || 'wechat-article';
-
-  for (var i = 0; i < images.length && i < 20; i++) {
-    var img = images[i];
-    var sourceUrl = img && img.url ? img.url : '';
-    if (!sourceUrl) continue;
-    var ext = inferImageExtension(sourceUrl);
-    var idx = String(i + 1).padStart(2, '0');
-    var relPath = 'bookmark-is-learned/assets/' + safeBase + '/img-' + idx + ext;
-
-    var downloaded = await downloadAssetToDownloads(sourceUrl, relPath);
-    localized.push({
-      url: sourceUrl,
-      alt: img.alt || '',
-      localPath: downloaded ? ('Downloads/' + relPath) : '',
-      localRelPath: downloaded ? ('./assets/' + safeBase + '/img-' + idx + ext) : '',
-      downloaded: downloaded,
-    });
-  }
-
-  return Object.assign({}, tweetData, {
-    imageAssets: localized,
-  });
-}
-
-function inferImageExtension(url) {
-  try {
-    var pathname = new URL(url).pathname || '';
-    var m = pathname.match(/\.([a-zA-Z0-9]{2,5})$/);
-    if (m) {
-      var ext = '.' + m[1].toLowerCase();
-      if (ext === '.jpeg') return '.jpg';
-      if (['.jpg', '.png', '.webp', '.gif', '.bmp', '.svg', '.avif'].includes(ext)) return ext;
-    }
-  } catch (_) {}
-  return '.jpg';
-}
-
-async function downloadAssetToDownloads(url, relPath) {
-  var downloadId = null;
-  try {
-    downloadId = await chrome.downloads.download({
-      url: url,
-      filename: relPath,
-      saveAs: false,
-      conflictAction: 'overwrite',
-    });
-  } catch (_) {
-    return false;
-  }
-
-  return new Promise(function (resolve) {
-    var done = false;
-    function finish(ok) {
-      if (done) return;
-      done = true;
-      chrome.downloads.onChanged.removeListener(onChanged);
-      resolve(ok);
-    }
-    function onChanged(delta) {
-      if (delta.id !== downloadId) return;
-      if (delta.state && delta.state.current === 'complete') {
-        finish(true);
-      } else if (delta.state && delta.state.current === 'interrupted') {
-        finish(false);
-      }
-    }
-    chrome.downloads.onChanged.addListener(onChanged);
-    setTimeout(function () { finish(false); }, 30000);
   });
 }
 
@@ -538,31 +453,6 @@ function appendOriginalContentSection(lines, tweetData, articleContent, quotedFu
     for (var i = 0; i < tweetData.referencedUrls.length; i++) {
       var linkUrl = tweetData.referencedUrls[i];
       lines.push('- [' + linkUrl + '](' + linkUrl + ')');
-    }
-    lines.push('');
-  }
-
-  if (tweetData.imageAssets && tweetData.imageAssets.length > 0) {
-    lines.push('### Images');
-    lines.push('');
-    for (var j = 0; j < tweetData.imageAssets.length; j++) {
-      var img = tweetData.imageAssets[j];
-      var imgTitle = (img.alt || '').trim() || ('Image ' + (j + 1));
-      if (img.localPath) lines.push('- ' + imgTitle + ' (local): `' + img.localPath + '`');
-      if (img.url) lines.push('- ' + imgTitle + ' (remote): [' + img.url + '](' + img.url + ')');
-    }
-    lines.push('');
-  }
-
-  if (tweetData.videoAssets && tweetData.videoAssets.length > 0) {
-    lines.push('### Videos (Links Only)');
-    lines.push('');
-    for (var k = 0; k < tweetData.videoAssets.length; k++) {
-      var videoUrl = tweetData.videoAssets[k] && tweetData.videoAssets[k].url
-        ? tweetData.videoAssets[k].url
-        : '';
-      if (!videoUrl) continue;
-      lines.push('- [Video ' + (k + 1) + '](' + videoUrl + ')');
     }
     lines.push('');
   }

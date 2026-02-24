@@ -145,8 +145,9 @@
       const articleUrl = detectArticleUrl(article);
       const quotedTweetUrl = detectQuotedTweetUrl(article);
 
-      const hasContent = tweetData.text || tweetData.cardText
-        || tweetData.quotedText || tweetData.fallbackText;
+      const hasContent = tweetData.text || tweetData.textWithMedia || tweetData.cardText
+        || tweetData.quotedText || tweetData.quotedTextWithMedia || tweetData.fallbackText
+        || (tweetData.imageAssets && tweetData.imageAssets.length > 0);
       if (!hasContent && !articleUrl && !quotedTweetUrl) {
         updateCard(cardId, '未找到可总结的内容', true);
         return;
@@ -328,6 +329,21 @@
     }
   }
 
+  function normalizeXImageUrl(urlLike) {
+    const normalized = normalizeAbsoluteUrl(urlLike);
+    if (!normalized) return '';
+    try {
+      const parsed = new URL(normalized);
+      const host = (parsed.hostname || '').toLowerCase();
+      if (/(^|\.)pbs\.twimg\.com$/.test(host)) {
+        parsed.searchParams.set('name', 'orig');
+      }
+      return parsed.toString();
+    } catch (_) {
+      return normalized;
+    }
+  }
+
   function htmlToMarkdown(element) {
     var result = '';
     var walker = document.createTreeWalker(
@@ -434,9 +450,13 @@
     const quotedTweet = article.querySelector('[data-testid="quoteTweet"]');
     const quotedText = quotedTweet
       ? (quotedTweet.querySelector('[data-testid="tweetText"]')?.innerText || '') : '';
+    const quotedTextEl = quotedTweet
+      ? quotedTweet.querySelector('[data-testid="tweetText"]')
+      : null;
     const quotedAuthorEl = quotedTweet
       ? quotedTweet.querySelector('[data-testid="User-Name"]') : null;
     const quotedAuthor = quotedAuthorEl ? quotedAuthorEl.innerText.split('\n')[0] : '';
+    const mediaContent = extractTweetMediaContent(article, tweetTextEl, quotedTweet, quotedTextEl);
 
     const cardEl = article.querySelector('[data-testid="card.wrapper"]');
     const cardText = cardEl ? cardEl.innerText : '';
@@ -483,6 +503,118 @@
     return {
       text, author, quotedText, quotedAuthor, cardText, fallbackText,
       tweetUrl, url: window.location.href, metrics, referencedUrls,
+      textWithMedia: mediaContent.mainBody,
+      quotedTextWithMedia: mediaContent.quotedBody,
+      imageAssets: mediaContent.mainImageAssets,
+      quotedImageAssets: mediaContent.quotedImageAssets,
+    };
+  }
+
+  function extractTweetMediaContent(article, tweetTextEl, quotedTweet, quotedTextEl) {
+    const mainBlocks = [];
+    const quotedBlocks = [];
+
+    if (tweetTextEl) {
+      mainBlocks.push({
+        type: 'text',
+        node: tweetTextEl,
+        text: tweetTextEl.innerText.trim(),
+      });
+    }
+    if (quotedTextEl) {
+      quotedBlocks.push({
+        type: 'text',
+        node: quotedTextEl,
+        text: quotedTextEl.innerText.trim(),
+      });
+    }
+
+    const photoNodes = article.querySelectorAll('[data-testid="tweetPhoto"]');
+    for (const photoNode of photoNodes) {
+      const parsed = parseTweetPhotoNode(photoNode);
+      if (!parsed.markdownLines.length) continue;
+      if (quotedTweet && quotedTweet.contains(photoNode)) {
+        quotedBlocks.push({
+          type: 'photo',
+          node: photoNode,
+          markdownLines: parsed.markdownLines,
+          assets: parsed.assets,
+        });
+      } else {
+        mainBlocks.push({
+          type: 'photo',
+          node: photoNode,
+          markdownLines: parsed.markdownLines,
+          assets: parsed.assets,
+        });
+      }
+    }
+
+    const mainRender = renderTweetBodyBlocks(mainBlocks);
+    const quotedRender = renderTweetBodyBlocks(quotedBlocks);
+    return {
+      mainBody: mainRender.body,
+      quotedBody: quotedRender.body,
+      mainImageAssets: mainRender.assets,
+      quotedImageAssets: quotedRender.assets,
+    };
+  }
+
+  function parseTweetPhotoNode(photoNode) {
+    const imgs = photoNode.querySelectorAll('img');
+    const assets = [];
+    const markdownLines = [];
+    const seen = new Set();
+
+    for (const img of imgs) {
+      const src = img.getAttribute('src')
+        || img.getAttribute('data-src')
+        || '';
+      const url = normalizeXImageUrl(src);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      const alt = (img.getAttribute('alt') || '').trim();
+      assets.push({ url: url, alt: alt });
+      markdownLines.push('![' + (alt || '图片') + '](' + url + ')');
+    }
+
+    return { assets: assets, markdownLines: markdownLines };
+  }
+
+  function renderTweetBodyBlocks(blocks) {
+    if (!blocks.length) return { body: '', assets: [] };
+
+    blocks.sort(function (a, b) {
+      if (a.node === b.node) return 0;
+      var pos = a.node.compareDocumentPosition(b.node);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+
+    const parts = [];
+    const assets = [];
+    const assetSeen = new Set();
+
+    for (const block of blocks) {
+      if (block.type === 'text') {
+        if (block.text) parts.push(block.text);
+        continue;
+      }
+      const joined = block.markdownLines.join('\n');
+      if (joined) parts.push(joined);
+      if (block.assets && block.assets.length) {
+        for (const asset of block.assets) {
+          if (!asset || !asset.url || assetSeen.has(asset.url)) continue;
+          assetSeen.add(asset.url);
+          assets.push(asset);
+        }
+      }
+    }
+
+    return {
+      body: parts.join('\n\n').trim(),
+      assets: assets,
     };
   }
 

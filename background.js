@@ -19,10 +19,17 @@ const PROVIDER_DEFAULT_ENDPOINTS = {
   zhipu: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
 };
 const OBSIDIAN_ALLOWED_TAGS = [
+  '创业/AI-Agent',
+  '创业/AI-产品',
   '创业/技术',
-  '创业/创业思想',
-  '投资/投资知识',
-  '投资/复盘分析',
+  '创业/变现模式',
+  '创业/创业心态',
+  '创业/趋势判断',
+  '投资/策略',
+  '投资/复盘',
+  '认知/趋势判断',
+  '认知/思维模型',
+  '认知/人物洞察',
   '生活',
 ];
 
@@ -332,7 +339,22 @@ function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent
   if (isObsidianMode) {
     var finalObsidianTag = normalizeObsidianTag(obsidianTag)
       || selectObsidianTag(tweetData, tldr, articleContent, quotedFullContent);
-    lines.push('#' + finalObsidianTag);
+
+    var obsidianTags = tweetData._obsidianTags || [finalObsidianTag];
+    var obsidianRelevance = tweetData._obsidianRelevance || '中';
+    var dateOnly = dateStr.split(' ')[0];
+
+    lines.push('---');
+    lines.push('tags:');
+    for (var ti = 0; ti < obsidianTags.length; ti++) {
+      lines.push('  - ' + obsidianTags[ti]);
+    }
+    lines.push('date: ' + dateOnly);
+    lines.push('source: "' + tweetUrl + '"');
+    lines.push('type: 文章');
+    lines.push('status: "🌱"');
+    lines.push('relevance: ' + obsidianRelevance);
+    lines.push('---');
     lines.push('');
     lines.push('> **Author**: ' + author);
     lines.push('> **Source**: ' + tweetUrl);
@@ -345,7 +367,6 @@ function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent
         + ' · **Views**: ' + (obsidianMetrics.views || '0'));
     }
     lines.push('');
-    // Obsidian mode is based on original mode: keep TLDR + original content.
     if (mode !== 'obsidian_raw') {
       lines.push('## TLDR');
       lines.push('');
@@ -417,6 +438,8 @@ function appendOriginalContentSection(lines, tweetData, articleContent, quotedFu
       lines.push('');
     }
     lines.push(cleanBody);
+  } else if (tweetData.textWithMedia) {
+    lines.push(tweetData.textWithMedia);
   } else if (tweetData.text) {
     lines.push(tweetData.text);
   } else if (tweetData.cardText) {
@@ -430,7 +453,7 @@ function appendOriginalContentSection(lines, tweetData, articleContent, quotedFu
   // Quoted content (if present)
   var quotedBody = quotedFullContent && quotedFullContent.body
     ? quotedFullContent.body
-    : (tweetData.quotedText || '');
+    : (tweetData.quotedTextWithMedia || tweetData.quotedText || '');
   if (quotedBody) {
     var quotedBy = tweetData.quotedAuthor || 'unknown';
     lines.push('### Quoted Content (by ' + quotedBy + ')');
@@ -471,18 +494,36 @@ function selectObsidianTag(tweetData, tldr, articleContent, quotedFullContent) {
   ].join('\n').toLowerCase();
 
   if (/(复盘|回测|回撤|盈亏|仓位|盘后|post[-\s]?mortem|trade review)/i.test(corpus)) {
-    return '投资/复盘分析';
+    return '投资/复盘';
   }
   if (/(投资|估值|财报|股票|基金|债券|portfolio|market|macro|alpha|\bpe\b|\bpb\b)/i.test(corpus)) {
-    return '投资/投资知识';
+    return '投资/策略';
   }
-  if (/(生活|健康|家庭|旅行|习惯|睡眠|健身|life|wellbeing|mindset)/i.test(corpus)) {
+  if (/(生活|健康|家庭|旅行|习惯|睡眠|健身|护肤|life|wellbeing)/i.test(corpus)) {
     return '生活';
   }
-  if (/(创业|商业模式|增长|用户|市场|销售|获客|经营|管理|founder|startup|saas|gtm)/i.test(corpus)) {
-    return '创业/创业思想';
+  if (/(段永平|巴菲特|芒格|纳瓦尔|buffett|munger|naval)/i.test(corpus)) {
+    return '认知/人物洞察';
   }
-  if (/(ai|agent|llm|prompt|模型|代码|编程|工程|开源|架构|算法|数据库|api|sdk|python|javascript|typescript|rust|go)/i.test(corpus)) {
+  if (/(思维模型|第一性原理|检查清单|决策|mental model|first principles)/i.test(corpus)) {
+    return '认知/思维模型';
+  }
+  if (/(趋势|未来|预测|时代|革命|颠覆|paradigm|trend|future)/i.test(corpus)) {
+    return '创业/趋势判断';
+  }
+  if (/(变现|赚钱|收入|营收|订阅|付费|monetiz|revenue|pricing|arpu)/i.test(corpus)) {
+    return '创业/变现模式';
+  }
+  if (/(agent|智能体|openclaw|clawdbot|moltbot|personal assistant)/i.test(corpus)) {
+    return '创业/AI-Agent';
+  }
+  if (/(产品|用户体验|mvp|需求|交互|product|ux|ui|feature)/i.test(corpus)) {
+    return '创业/AI-产品';
+  }
+  if (/(创业|商业模式|增长|市场|销售|获客|经营|管理|founder|startup|saas|gtm|心态|动力)/i.test(corpus)) {
+    return '创业/创业心态';
+  }
+  if (/(ai|llm|prompt|模型|代码|编程|工程|开源|架构|算法|数据库|api|sdk|python|javascript|typescript|rust|go|vibe.?cod)/i.test(corpus)) {
     return '创业/技术';
   }
   return OBSIDIAN_ALLOWED_TAGS[0];
@@ -772,6 +813,8 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
     obsidianTag = parsedObsidian.tag;
     obsidianTitle = parsedObsidian.title;
     tldr = parsedObsidian.summary;
+    tweetData._obsidianTags = parsedObsidian.tags;
+    tweetData._obsidianRelevance = parsedObsidian.relevance;
   }
 
   return {
@@ -1095,18 +1138,20 @@ function buildPrompt(tweetData, articleContent, quotedFullContent, language, isA
         + '**Fact Check** with credibility score.';
     }
 
-    var obsidianInstruction = 'You are organizing a note for Obsidian. '
+    var obsidianInstruction = 'You are organizing a note for Obsidian with YAML frontmatter. '
       + 'Respond in ' + langName + ' and strictly follow this exact output envelope:\n'
-      + 'OBSIDIAN_TAG: <one exact value from this list only: '
+      + 'OBSIDIAN_TAGS: <one or two exact values from this list, comma-separated: '
       + OBSIDIAN_ALLOWED_TAGS.join(', ')
       + '>\n'
       + 'OBSIDIAN_TITLE: <one concise sentence, content-only, no author/date/source>\n'
+      + 'OBSIDIAN_RELEVANCE: <高 or 中 or 低> (relevance to AI entrepreneurship and making money)\n'
       + 'OBSIDIAN_TLDR:\n'
       + '<structured markdown summary>\n\n'
       + obsidianTldrGuide + '\n\n'
       + 'Rules:\n'
-      + '- Do not invent a new tag.\n'
+      + '- Do not invent a new tag. Pick 1-2 from the allowed list.\n'
       + '- OBSIDIAN_TITLE must be plain text in one sentence.\n'
+      + '- OBSIDIAN_RELEVANCE: 高 = directly about AI/startup/money, 中 = somewhat related, 低 = tangential.\n'
       + '- Keep markdown structure inside OBSIDIAN_TLDR.';
     return { system: obsidianInstruction, user: userContent };
   }
@@ -1175,7 +1220,9 @@ function parseObsidianAiOutput(aiText, tweetData, articleContent, quotedFullCont
   var text = (aiText || '').trim();
   var lines = text.split('\n');
   var tag = '';
+  var tags = [];
   var title = '';
+  var relevance = '中';
   var summaryLines = [];
   var captureSummary = false;
 
@@ -1186,15 +1233,24 @@ function parseObsidianAiOutput(aiText, tweetData, articleContent, quotedFullCont
       continue;
     }
 
-    var tagMatch = line.match(/^OBSIDIAN_TAG\s*:\s*(.+)$/i);
-    if (tagMatch) {
-      tag = normalizeObsidianTag(tagMatch[1]);
+    var tagsMatch = line.match(/^OBSIDIAN_TAGS?\s*:\s*(.+)$/i);
+    if (tagsMatch) {
+      var rawTags = tagsMatch[1].split(/[,，]/).map(function (t) { return t.trim().replace(/^#+/, ''); });
+      tags = rawTags.filter(function (t) { return OBSIDIAN_ALLOWED_TAGS.includes(t); });
+      if (tags.length === 0) tag = normalizeObsidianTag(rawTags[0]);
       continue;
     }
 
     var titleMatch = line.match(/^OBSIDIAN_TITLE\s*:\s*(.+)$/i);
     if (titleMatch) {
       title = normalizeObsidianTitle(titleMatch[1]);
+      continue;
+    }
+
+    var relevanceMatch = line.match(/^OBSIDIAN_RELEVANCE\s*:\s*(.+)$/i);
+    if (relevanceMatch) {
+      var r = relevanceMatch[1].trim();
+      if (['高', '中', '低'].includes(r)) relevance = r;
       continue;
     }
 
@@ -1209,18 +1265,25 @@ function parseObsidianAiOutput(aiText, tweetData, articleContent, quotedFullCont
   var summary = summaryLines.join('\n').trim();
   if (!summary) {
     summary = text
-      .replace(/^OBSIDIAN_TAG\s*:.+$/gim, '')
+      .replace(/^OBSIDIAN_TAGS?\s*:.+$/gim, '')
       .replace(/^OBSIDIAN_TITLE\s*:.+$/gim, '')
+      .replace(/^OBSIDIAN_RELEVANCE\s*:.+$/gim, '')
       .replace(/^OBSIDIAN_TLDR\s*:?\s*$/gim, '')
       .replace(/^OBSIDIAN_SUMMARY\s*:?\s*$/gim, '')
       .trim();
   }
   if (!summary) summary = extractFirstMeaningfulSentence(text) || '已生成 Obsidian 笔记';
 
-  if (!tag) tag = selectObsidianTag(tweetData, summary, articleContent, quotedFullContent);
+  if (tags.length === 0) {
+    if (tag) {
+      tags = [tag];
+    } else {
+      tags = [selectObsidianTag(tweetData, summary, articleContent, quotedFullContent)];
+    }
+  }
   if (!title) title = buildObsidianTitle(tweetData, summary, articleContent, isArticle);
 
-  return { tag: tag, title: title, summary: summary };
+  return { tag: tags[0], tags: tags, title: title, summary: summary, relevance: relevance };
 }
 
 // ── LLM API calls ───────────────────────────────────────────────────────────────

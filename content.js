@@ -550,12 +550,40 @@
       }
     }
 
+    // Fallback for X Articles: article body images are rendered as plain <img>
+    // tags, not wrapped in [data-testid="tweetPhoto"] containers.
+    const articleImageAssets = [];
+    if (!mainBlocks.some(function (b) { return b.type === 'photo'; })) {
+      const allImgs = article.querySelectorAll('img');
+      const imgSeen = new Set();
+      for (const img of allImgs) {
+        if (quotedTweet && quotedTweet.contains(img)) continue;
+        if (img.closest('[data-testid="Tweet-User-Avatar"]')) continue;
+        if (img.closest('[role="group"]')) continue;
+        const src = img.getAttribute('src') || img.getAttribute('data-src') || '';
+        const url = normalizeXImageUrl(src);
+        if (!url || imgSeen.has(url)) continue;
+        try {
+          const parsed = new URL(url);
+          const path = parsed.pathname || '';
+          if (/\/profile_images\//.test(path)) continue;
+          if (/\/emoji\//.test(path)) continue;
+        } catch (_) { continue; }
+        const w = img.naturalWidth || parseInt(img.getAttribute('width')) || 0;
+        const h = img.naturalHeight || parseInt(img.getAttribute('height')) || 0;
+        if (w > 0 && w < 48 && h > 0 && h < 48) continue;
+        imgSeen.add(url);
+        const alt = (img.getAttribute('alt') || '').trim();
+        articleImageAssets.push({ url: url, alt: alt });
+      }
+    }
+
     const mainRender = renderTweetBodyBlocks(mainBlocks);
     const quotedRender = renderTweetBodyBlocks(quotedBlocks);
     return {
       mainBody: mainRender.body,
       quotedBody: quotedRender.body,
-      mainImageAssets: mainRender.assets,
+      mainImageAssets: mainRender.assets.length > 0 ? mainRender.assets : articleImageAssets,
       quotedImageAssets: quotedRender.assets,
     };
   }

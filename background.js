@@ -431,6 +431,7 @@ function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent
 function appendOriginalContentSection(lines, tweetData, articleContent, quotedFullContent, isArticle, author, options) {
   var opts = options || {};
   var includeArticleHeading = opts.includeArticleHeading !== false;
+  var usedTextWithMedia = false;
   if (isArticle && articleContent) {
     var cleanBody = stripArticleMetadataPrefix(articleContent.body, articleContent.title, author);
     if (articleContent.title && includeArticleHeading) {
@@ -440,13 +441,23 @@ function appendOriginalContentSection(lines, tweetData, articleContent, quotedFu
     lines.push(cleanBody);
   } else if (tweetData.textWithMedia) {
     lines.push(tweetData.textWithMedia);
+    usedTextWithMedia = true;
   } else if (tweetData.text) {
     lines.push(tweetData.text);
   } else if (tweetData.cardText) {
     lines.push(tweetData.cardText);
   } else if (tweetData.fallbackText) {
-    // fallbackText from X Articles may also contain metadata prefix
     lines.push(stripArticleMetadataPrefix(tweetData.fallbackText, '', author));
+  }
+
+  // Append article images when they weren't already embedded inline
+  // (X Articles store images in imageAssets separately from fallbackText)
+  if (!usedTextWithMedia && tweetData.imageAssets && tweetData.imageAssets.length > 0) {
+    lines.push('');
+    for (var ia = 0; ia < tweetData.imageAssets.length; ia++) {
+      var asset = tweetData.imageAssets[ia];
+      lines.push('![' + (asset.alt || '图片') + '](' + asset.url + ')');
+    }
   }
   lines.push('');
 

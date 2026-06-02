@@ -121,9 +121,9 @@
           }
           if (response?.success) {
             if (response.mode === 'raw' || response.mode === 'obsidian_raw') {
-              updateCard(cardId, '已保存原文到 Markdown', false, wechatData.tweetUrl);
+              updateCard(cardId, '已保存原文到 Markdown', false, wechatData.tweetUrl, response.summaryTitle);
             } else {
-              updateCard(cardId, response.tldr, false, wechatData.tweetUrl);
+              updateCard(cardId, response.tldr, false, wechatData.tweetUrl, response.summaryTitle);
             }
           } else {
             updateCard(cardId, response?.error || '生成摘要失败', true);
@@ -162,9 +162,9 @@
           }
           if (response?.success) {
             if (response.mode === 'raw' || response.mode === 'obsidian_raw') {
-              updateCard(cardId, '已保存原文到 Markdown', false, tweetData.tweetUrl);
+              updateCard(cardId, '已保存原文到 Markdown', false, tweetData.tweetUrl, response.summaryTitle);
             } else {
-              updateCard(cardId, response.tldr, false, tweetData.tweetUrl);
+              updateCard(cardId, response.tldr, false, tweetData.tweetUrl, response.summaryTitle);
             }
           } else {
             updateCard(cardId, response?.error || '生成摘要失败', true);
@@ -844,7 +844,7 @@
     activeCards.push({ id: cardId, element: card, timerId: null });
   }
 
-  function updateCard(cardId, content, isError, tweetUrl) {
+  function updateCard(cardId, content, isError, tweetUrl, summaryTitle) {
     const info = activeCards.find((c) => c.id === cardId);
     if (!info) return;
 
@@ -854,6 +854,14 @@
     // Replace body contents
     const body = card.querySelector('.btl-card-body');
     body.textContent = '';
+
+    const normalizedTitle = (summaryTitle || '').trim();
+    if (!isError && normalizedTitle) {
+      const titleEl = document.createElement('div');
+      titleEl.className = 'btl-summary-title';
+      titleEl.textContent = normalizedTitle;
+      body.appendChild(titleEl);
+    }
 
     const contentEl = document.createElement('div');
     contentEl.className = 'btl-tldr-content';

@@ -17,6 +17,7 @@
     "https://api.anthropic.com/*",
     "https://api.moonshot.cn/*",
     "https://open.bigmodel.cn/*",
+    "https://dashscope.aliyuncs.com/*",
     "https://api.github.com/*"
   ],
   "background": {

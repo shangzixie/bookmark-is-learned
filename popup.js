@@ -7,6 +7,7 @@ const DEFAULT_MODELS = {
   claude: 'claude-sonnet-4-20250514',
   kimi: 'moonshot-v1-8k',
   zhipu: 'glm-4-flash',
+  qwen: 'qwen-plus',
 };
 
 // Theme cycle order: auto → light → dark → auto
@@ -740,6 +741,13 @@ async function loadHistory() {
     var item = document.createElement('div');
     item.className = 'history-item';
 
+    if (entry.localTitle) {
+      var title = document.createElement('div');
+      title.className = 'history-title';
+      title.textContent = entry.localTitle;
+      item.appendChild(title);
+    }
+
     var header = document.createElement('div');
     header.className = 'history-item-header';
 
@@ -753,6 +761,13 @@ async function loadHistory() {
 
     header.appendChild(authorSpan);
     header.appendChild(timeSpan);
+
+    if (entry.fileName) {
+      var fileMeta = document.createElement('div');
+      fileMeta.className = 'history-file-meta';
+      fileMeta.textContent = '本地文件: ' + entry.fileName;
+      item.appendChild(fileMeta);
+    }
 
     var preview = document.createElement('div');
     preview.className = 'history-preview';

@@ -17,6 +17,7 @@ const PROVIDER_DEFAULT_ENDPOINTS = {
   claude: 'https://api.anthropic.com/v1/messages',
   kimi: 'https://api.moonshot.cn/v1/chat/completions',
   zhipu: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
 };
 const OBSIDIAN_ALLOWED_TAGS = [
   '创业/AI-Agent',
@@ -38,7 +39,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleTLDRRequest(message.tweetData, message.articleUrl, message.quotedTweetUrl)
       .then(async (result) => {
         // Save to history (non-blocking)
-        saveToHistory(message.tweetData, result.tldr, result.isArticle);
+        saveToHistory(
+          message.tweetData,
+          result.tldr,
+          result.isArticle,
+          result.articleContent,
+          result.mode,
+          result.obsidianTitle
+        );
 
         // Download markdown only if user has enabled it
         var prefs = await chrome.storage.sync.get({ autoDownloadMd: true });
@@ -57,7 +65,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           );
         }
 
-        sendResponse({ success: true, tldr: result.tldr, mode: result.mode });
+        var fallbackTitle = (message.tweetData && message.tweetData.title) ? message.tweetData.title : '';
+        var summaryTitle = (result.obsidianTitle || fallbackTitle || '').trim();
+        sendResponse({ success: true, tldr: result.tldr, mode: result.mode, summaryTitle: summaryTitle });
       })
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
@@ -95,7 +105,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── History persistence ──────────────────────────────────────────────────────
 
-async function saveToHistory(tweetData, tldr, isArticle) {
+async function saveToHistory(tweetData, tldr, isArticle, articleContent, mode, obsidianTitle) {
   try {
     var result = await chrome.storage.local.get({ history: [] });
     var history = result.history;
@@ -106,6 +116,9 @@ async function saveToHistory(tweetData, tldr, isArticle) {
     var tweetPreview = previewSource.slice(0, 120);
     if (previewSource.length > 120) tweetPreview += '...';
 
+    var fileName = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle);
+    var localTitle = fileName.replace(/\.md$/i, '');
+
     var entry = {
       id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
       timestamp: Date.now(),
@@ -114,6 +127,8 @@ async function saveToHistory(tweetData, tldr, isArticle) {
       tweetPreview: tweetPreview,
       tldr: tldr,
       isArticle: isArticle,
+      localTitle: localTitle,
+      fileName: fileName,
     };
 
     history.unshift(entry);
@@ -815,6 +830,9 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
     case 'zhipu':
       tldr = await callZhipu(apiKey, endpoint, settings.model || 'glm-4-flash', prompt, maxTokens);
       break;
+    case 'qwen':
+      tldr = await callQwen(apiKey, endpoint, settings.model || 'qwen-plus', prompt, maxTokens);
+      break;
     default:
       throw new Error('不支持的模型: ' + settings.provider);
   }
@@ -1397,6 +1415,31 @@ async function callZhipu(apiKey, endpoint, model, prompt, maxTokens) {
   var data = await res.json();
   if (!data.choices || !data.choices[0] || !data.choices[0].message) {
     throw new Error('智谱 API returned unexpected response format');
+  }
+  return data.choices[0].message.content;
+}
+
+async function callQwen(apiKey, endpoint, model, prompt, maxTokens) {
+  var res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
+    body: JSON.stringify({
+      model: model,
+      messages: [
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: prompt.user },
+      ],
+      max_tokens: maxTokens,
+      temperature: 0.3,
+    }),
+  });
+  if (!res.ok) {
+    var err = await res.json().catch(function () { return {}; });
+    throw new Error((err.error && err.error.message) || 'Qwen API error: ' + res.status);
+  }
+  var data = await res.json();
+  if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+    throw new Error('Qwen API returned unexpected response format');
   }
   return data.choices[0].message.content;
 }

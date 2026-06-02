@@ -17,7 +17,7 @@
 - **一键摘要** — 点击收藏按钮，自动生成结构化 TLDR 摘要（要点提炼、步骤流程、事实核查评分）
 - **AI 开关** — 一键关闭 AI 摘要和事实核查，仅保存原文 + 元数据到 Markdown（无需 API Key），默认开启
 - **原文模式** — 支持切换为原文模式，跳过 AI 摘要，直接保存完整原文到 Markdown（无需 API Key）
-- **多模型支持** — 支持 OpenAI (GPT)、Claude (Anthropic)、Kimi (月之暗面)、智谱 (GLM) 四大模型
+- **多模型支持** — 支持 OpenAI (GPT)、Claude (Anthropic)、Kimi (月之暗面)、智谱 (GLM)、Qwen (通义千问/百炼)
 - **自定义 Base URL** — 支持配置中转 API 地址，可走私有网关或代理服务
 - **深度内容提取** — 自动展开"显示更多"折叠内容，支持 X Articles 长文、引用/转发长帖的全文抓取
 - **卡片堆叠** — 支持连续快速收藏，多张 TLDR 卡片同时显示，互不阻塞
@@ -191,6 +191,7 @@ AI 生成的结构化摘要
 | Claude | `claude-sonnet-4-20250514` |
 | Kimi | `moonshot-v1-8k` |
 | 智谱 | `glm-4-flash` |
+| Qwen | `qwen-plus` |
 
 可在设置中自定义模型版本（如 `gpt-4o`、`claude-opus-4-20250514` 等）。
 
@@ -226,6 +227,7 @@ bookmark-is-learned/
 | Claude | https://console.anthropic.com/settings/keys |
 | Kimi | https://platform.moonshot.cn/console/api-keys |
 | 智谱 | https://open.bigmodel.cn/usercenter/apikeys |
+| Qwen | https://bailian.console.aliyun.com/ |
 
 ## 许可证
 
@@ -254,7 +256,7 @@ MIT License
 - **One-Click Summaries** — Bookmark a post and instantly get a structured TLDR (key points, step-by-step processes, fact-check scoring)
 - **AI Toggle** — Disable AI summarization and fact-checking with one click — saves only original text + metadata to Markdown (no API Key needed), enabled by default
 - **Original Text Mode** — Switch to Original mode to save the full original text directly to Markdown without AI summarization (no API Key required)
-- **Multi-Model Support** — Choose between OpenAI (GPT), Claude (Anthropic), Kimi (Moonshot), and Zhipu (GLM)
+- **Multi-Model Support** — Choose between OpenAI (GPT), Claude (Anthropic), Kimi (Moonshot), Zhipu (GLM), and Qwen (Tongyi/Qwen)
 - **Custom Base URL** — Route requests through your API proxy or private gateway
 - **Deep Content Extraction** — Auto-expands "Show more" truncated text, fetches full X Articles, and retrieves complete quoted/retweeted long posts
 - **Card Stacking** — Bookmark multiple posts in rapid succession — each TLDR loads independently as a stacked card
@@ -428,6 +430,7 @@ Background receives → If article/quoted post, fetch full content via backgroun
 | Claude | `claude-sonnet-4-20250514` |
 | Kimi | `moonshot-v1-8k` |
 | Zhipu | `glm-4-flash` |
+| Qwen | `qwen-plus` |
 
 You can override the model version in settings (e.g. `gpt-4o`, `claude-opus-4-20250514`).
 
@@ -463,6 +466,7 @@ bookmark-is-learned/
 | Claude | https://console.anthropic.com/settings/keys |
 | Kimi | https://platform.moonshot.cn/console/api-keys |
 | Zhipu | https://open.bigmodel.cn/usercenter/apikeys |
+| Qwen | https://bailian.console.aliyun.com/ |
 
 ## License
 

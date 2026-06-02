@@ -148,6 +148,14 @@
   color: #0f1419;
 }
 
+.btl-summary-title {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: #0f1419;
+}
+
 .btl-tldr-content p {
   margin: 0 0 8px 0;
 }
@@ -296,6 +304,9 @@
 .btl-card-container.btl-dark .btl-tldr-content {
   color: #e7e9ea;
 }
+.btl-card-container.btl-dark .btl-summary-title {
+  color: #ffffff;
+}
 .btl-card-container.btl-dark .btl-tldr-content strong {
   color: #ffffff;
 }
@@ -353,6 +364,9 @@
   }
   .btl-card-container.btl-auto .btl-tldr-content {
     color: #e7e9ea;
+  }
+  .btl-card-container.btl-auto .btl-summary-title {
+    color: #ffffff;
   }
   .btl-card-container.btl-auto .btl-tldr-content strong {
     color: #ffffff;

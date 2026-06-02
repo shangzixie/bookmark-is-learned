@@ -732,6 +732,15 @@ select {
   border-bottom: 1px solid var(--border-color);
 }
 
+.history-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.45;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
 .history-item:last-child {
   border-bottom: none;
 }
@@ -768,6 +777,14 @@ select {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.history-file-meta {
+  font-size: 11px;
+  color: var(--text-hint);
+  line-height: 1.4;
+  margin-bottom: 6px;
+  word-break: break-all;
 }
 
 /* ── TLDR content (expandable) ───────────────────────────────────────────── */

@@ -34,6 +34,11 @@ const OBSIDIAN_ALLOWED_TAGS = [
   '生活',
 ];
 
+// Obsidian mode splits each capture into two cross-linked notes: a summary note
+// (the core "startup learning" card) and an original note (full source text).
+const OBSIDIAN_SUMMARY_SUFFIX = ' - 总结';
+const OBSIDIAN_ORIGINAL_SUFFIX = ' - 原文';
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GENERATE_TLDR') {
     handleTLDRRequest(message.tweetData, message.articleUrl, message.quotedTweetUrl)
@@ -116,7 +121,9 @@ async function saveToHistory(tweetData, tldr, isArticle, articleContent, mode, o
     var tweetPreview = previewSource.slice(0, 120);
     if (previewSource.length > 120) tweetPreview += '...';
 
-    var fileName = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle);
+    // In split Obsidian mode the canonical note is the summary; point history at it.
+    var historySuffix = (mode === 'obsidian') ? OBSIDIAN_SUMMARY_SUFFIX : '';
+    var fileName = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle, historySuffix);
     var localTitle = fileName.replace(/\.md$/i, '');
 
     var entry = {
@@ -156,6 +163,26 @@ async function saveMarkdownFile(
   obsidianTitle
 ) {
   try {
+    // Obsidian (with a summary) → two cross-linked notes: summary + original.
+    // obsidian_raw has no summary, and other modes stay single-file.
+    if (mode === 'obsidian') {
+      var summaryFile = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle, OBSIDIAN_SUMMARY_SUFFIX);
+      var originalFile = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle, OBSIDIAN_ORIGINAL_SUFFIX);
+      var summaryLink = summaryFile.replace(/\.md$/i, '');
+      var originalLink = originalFile.replace(/\.md$/i, '');
+
+      var summaryMd = buildObsidianSummaryNote(
+        tweetData, tldr, articleContent, quotedFullContent, obsidianTag, originalLink
+      );
+      var originalMd = buildObsidianOriginalNote(
+        tweetData, articleContent, quotedFullContent, isArticle, summaryLink
+      );
+
+      await saveOneFile(summaryMd, summaryFile, senderTabId);
+      await saveOneFile(originalMd, originalFile, senderTabId);
+      return;
+    }
+
     var fileName = buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle);
     var markdown = buildMarkdownContent(
       tweetData,
@@ -167,21 +194,7 @@ async function saveMarkdownFile(
       obsidianTag,
       obsidianTitle
     );
-
-    // 1. Primary: native messaging host (writes to any user-chosen folder)
-    var written = await writeViaNativeHost(markdown, fileName);
-    if (written) return;
-
-    // 2. Fallback: content-script download via <a download> tag.
-    //    More reliable than chrome.downloads for filename handling on Windows,
-    //    where chrome.downloads ignores the filename parameter for data/blob URLs.
-    if (senderTabId) {
-      var csWritten = await writeViaContentScript(senderTabId, markdown, fileName);
-      if (csWritten) return;
-    }
-
-    // 3. Last resort: chrome.downloads API (filename may be incorrect on Windows)
-    await writeViaDownloads(markdown, fileName);
+    await saveOneFile(markdown, fileName, senderTabId);
   } catch (err) {
     console.log('[background] saveMarkdownFile error:', err.message);
     // Log save failure for debug info display in popup
@@ -189,6 +202,18 @@ async function saveMarkdownFile(
       lastSave: { timestamp: Date.now(), success: false, error: err.message },
     });
   }
+}
+
+// Write a single markdown file via the save cascade:
+//   1. native host → 2. content-script <a download> → 3. chrome.downloads
+async function saveOneFile(markdown, fileName, senderTabId) {
+  var written = await writeViaNativeHost(markdown, fileName);
+  if (written) return;
+  if (senderTabId) {
+    var csWritten = await writeViaContentScript(senderTabId, markdown, fileName);
+    if (csWritten) return;
+  }
+  await writeViaDownloads(markdown, fileName);
 }
 
 // Write markdown via the native messaging host.
@@ -337,6 +362,29 @@ function stripArticleMetadataPrefix(body, title, author) {
   return lines.slice(i).join('\n').trim();
 }
 
+// Normalize extracted body text (innerText) into valid Markdown paragraphs.
+// Raw innerText separates paragraphs with a single "\n", which Markdown collapses
+// into one run-on paragraph. Promote each non-empty source line to its own
+// paragraph by joining with a blank line. Idempotent on already-spaced text.
+function toMarkdownParagraphs(text) {
+  return String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(function (line) { return line.replace(/\s+$/, ''); })
+    .filter(function (line) { return line.trim().length > 0; })
+    .join('\n\n');
+}
+
+// Format the current local time as "YYYY-MM-DD HH:MM".
+function formatNowDateTime() {
+  var now = new Date();
+  return now.getFullYear() + '-'
+    + String(now.getMonth() + 1).padStart(2, '0') + '-'
+    + String(now.getDate()).padStart(2, '0') + ' '
+    + String(now.getHours()).padStart(2, '0') + ':'
+    + String(now.getMinutes()).padStart(2, '0');
+}
+
 // Build the markdown content string from tweet data and TLDR result
 function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent, isArticle, mode, obsidianTag, obsidianTitle) {
   var isObsidianMode = (mode === 'obsidian' || mode === 'obsidian_raw');
@@ -443,6 +491,81 @@ function buildMarkdownContent(tweetData, tldr, articleContent, quotedFullContent
   return lines.join('\n');
 }
 
+// Obsidian split — summary note: the core "startup learning" card.
+// Carries the full frontmatter (tags/relevance) and a jump link to the original.
+function buildObsidianSummaryNote(tweetData, tldr, articleContent, quotedFullContent, obsidianTag, originalLink) {
+  var author = tweetData.author || 'unknown';
+  var tweetUrl = tweetData.tweetUrl || tweetData.url || '';
+  var dateStr = formatNowDateTime();
+  var dateOnly = dateStr.split(' ')[0];
+
+  var finalObsidianTag = normalizeObsidianTag(obsidianTag)
+    || selectObsidianTag(tweetData, tldr, articleContent, quotedFullContent);
+  var obsidianTags = tweetData._obsidianTags || [finalObsidianTag];
+  var obsidianRelevance = tweetData._obsidianRelevance || '中';
+
+  var lines = [];
+  lines.push('---');
+  lines.push('tags:');
+  for (var ti = 0; ti < obsidianTags.length; ti++) {
+    lines.push('  - ' + obsidianTags[ti]);
+  }
+  lines.push('date: ' + dateOnly);
+  lines.push('source: "' + tweetUrl + '"');
+  lines.push('type: 总结');
+  lines.push('status: "🌱"');
+  lines.push('relevance: ' + obsidianRelevance);
+  lines.push('---');
+  lines.push('');
+  lines.push('> **Author**: ' + author);
+  lines.push('> **Source**: ' + tweetUrl);
+  lines.push('> **Date**: ' + dateStr);
+  var metrics = tweetData.metrics;
+  if (metrics) {
+    lines.push('> **Replies**: ' + (metrics.replies || '0')
+      + ' · **Retweets**: ' + (metrics.retweets || '0')
+      + ' · **Likes**: ' + (metrics.likes || '0')
+      + ' · **Views**: ' + (metrics.views || '0'));
+  }
+  lines.push('');
+  lines.push('> 📄 原文 → [[' + originalLink + ']]');
+  lines.push('');
+  lines.push('## TLDR');
+  lines.push('');
+  lines.push(tldr || '');
+  lines.push('');
+  return lines.join('\n');
+}
+
+// Obsidian split — original note: the full source text, kept out of the summary
+// for clean reading. Minimal frontmatter; back-links to the summary note.
+function buildObsidianOriginalNote(tweetData, articleContent, quotedFullContent, isArticle, summaryLink) {
+  var author = tweetData.author || 'unknown';
+  var tweetUrl = tweetData.tweetUrl || tweetData.url || '';
+  var dateStr = formatNowDateTime();
+  var dateOnly = dateStr.split(' ')[0];
+
+  var lines = [];
+  lines.push('---');
+  lines.push('source: "' + tweetUrl + '"');
+  lines.push('date: ' + dateOnly);
+  lines.push('type: 原文');
+  lines.push('---');
+  lines.push('');
+  lines.push('> **Author**: ' + author);
+  lines.push('> **Source**: ' + tweetUrl);
+  lines.push('> **Date**: ' + dateStr);
+  lines.push('');
+  lines.push('> 📝 看总结 → [[' + summaryLink + ']]');
+  lines.push('');
+  lines.push('## 原文');
+  lines.push('');
+  appendOriginalContentSection(lines, tweetData, articleContent, quotedFullContent, isArticle, author, {
+    includeArticleHeading: false,
+  });
+  return lines.join('\n');
+}
+
 function appendOriginalContentSection(lines, tweetData, articleContent, quotedFullContent, isArticle, author, options) {
   var opts = options || {};
   var includeArticleHeading = opts.includeArticleHeading !== false;
@@ -453,16 +576,16 @@ function appendOriginalContentSection(lines, tweetData, articleContent, quotedFu
       lines.push('### ' + articleContent.title);
       lines.push('');
     }
-    lines.push(cleanBody);
+    lines.push(toMarkdownParagraphs(cleanBody));
   } else if (tweetData.textWithMedia) {
-    lines.push(tweetData.textWithMedia);
+    lines.push(toMarkdownParagraphs(tweetData.textWithMedia));
     usedTextWithMedia = true;
   } else if (tweetData.text) {
-    lines.push(tweetData.text);
+    lines.push(toMarkdownParagraphs(tweetData.text));
   } else if (tweetData.cardText) {
-    lines.push(tweetData.cardText);
+    lines.push(toMarkdownParagraphs(tweetData.cardText));
   } else if (tweetData.fallbackText) {
-    lines.push(stripArticleMetadataPrefix(tweetData.fallbackText, '', author));
+    lines.push(toMarkdownParagraphs(stripArticleMetadataPrefix(tweetData.fallbackText, '', author)));
   }
 
   // Append article images when they weren't already embedded inline
@@ -484,7 +607,7 @@ function appendOriginalContentSection(lines, tweetData, articleContent, quotedFu
     var quotedBy = tweetData.quotedAuthor || 'unknown';
     lines.push('### Quoted Content (by ' + quotedBy + ')');
     lines.push('');
-    lines.push(quotedBody);
+    lines.push(toMarkdownParagraphs(quotedBody));
     lines.push('');
   }
 
@@ -626,7 +749,7 @@ function extractFirstMeaningfulSentence(text) {
 
 // Build a sanitized filename like "handle-title-20260211-143022.md"
 // Format: x-account handle, title (obsidian title / article title / tweet excerpt), timestamp
-function buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle) {
+function buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle, suffix) {
   // Extract source handle from URL (X account for x.com, author slug fallback elsewhere)
   var handle = 'unknown';
   var tweetUrl = tweetData.tweetUrl || tweetData.url || '';
@@ -673,8 +796,9 @@ function buildFileName(tweetData, articleContent, isArticle, mode, obsidianTitle
   if (!safeTitle) safeTitle = 'untitled';
 
   // Obsidian mode prefers clean, title-only filenames.
+  // `suffix` distinguishes the split summary / original notes (e.g. " - 总结").
   if (mode === 'obsidian' || mode === 'obsidian_raw') {
-    return safeTitle + '.md';
+    return safeTitle + (suffix || '') + '.md';
   }
 
   var now = new Date();
@@ -811,7 +935,8 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
     hasQuotedFull,
     settings.mdMode
   );
-  const maxTokens = (isArticle || hasQuotedFull) ? 2000 : 1000;
+  // 不限量:OpenAI 兼容端省略 max_tokens 走模型默认上限;Claude 端兜底用 8192
+  const maxTokens = null;
   const endpoint = await resolveApiEndpoint(settings.provider, settings.baseUrl);
 
   let tldr;
@@ -819,19 +944,19 @@ async function handleTLDRRequest(tweetData, articleUrl, quotedTweetUrl) {
   let obsidianTitle = '';
   switch (settings.provider) {
     case 'openai':
-      tldr = await callOpenAI(apiKey, endpoint, settings.model || 'gpt-4o-mini', prompt, maxTokens);
+      tldr = await callOpenAI(apiKey, endpoint, settings.model || 'gpt-4o', prompt, maxTokens);
       break;
     case 'claude':
-      tldr = await callClaude(apiKey, endpoint, settings.model || 'claude-sonnet-4-20250514', prompt, maxTokens);
+      tldr = await callClaude(apiKey, endpoint, settings.model || 'claude-opus-4-8', prompt, maxTokens);
       break;
     case 'kimi':
-      tldr = await callKimi(apiKey, endpoint, settings.model || 'moonshot-v1-8k', prompt, maxTokens);
+      tldr = await callKimi(apiKey, endpoint, settings.model || 'moonshot-v1-128k', prompt, maxTokens);
       break;
     case 'zhipu':
-      tldr = await callZhipu(apiKey, endpoint, settings.model || 'glm-4-flash', prompt, maxTokens);
+      tldr = await callZhipu(apiKey, endpoint, settings.model || 'glm-4-plus', prompt, maxTokens);
       break;
     case 'qwen':
-      tldr = await callQwen(apiKey, endpoint, settings.model || 'qwen-plus', prompt, maxTokens);
+      tldr = await callQwen(apiKey, endpoint, settings.model || 'qwen-max', prompt, maxTokens);
       break;
     default:
       throw new Error('不支持的模型: ' + settings.provider);
@@ -1144,26 +1269,34 @@ function buildPrompt(tweetData, articleContent, quotedFullContent, language, isA
   }
 
   if (mode === 'obsidian') {
+    // 用户收集笔记是为了创业学习,这一段是整篇笔记的核心,要求最详尽、最具体。
+    var obsidianInsightGuide = '**创业者/产品/技术方面的启发总结(本笔记的核心,请写得最充分)** — 这是用户做这份笔记的根本目的:为日后创业学习积累可复用的认知。\n'
+      + '- 提炼尽可能多的启发(至少 5 条,内容支持就写更多),每条用一个 **加粗小标题** 概括观点,再用多句话展开。\n'
+      + '- 每条都必须落到文中的具体实据:直接引用的原话金句、点名的人物/公司/产品、具体的数字或真实案例,严禁放之四海皆准的空泛套话。\n'
+      + '- 每条尽量回答「这对创业者意味着什么、可以怎么用」,把洞察转成可借鉴的行动或判断。\n';
     var obsidianTldrGuide = '';
     if (isArticle) {
-      obsidianTldrGuide = 'In OBSIDIAN_TLDR, produce a thorough long-form summary with this structure:\n'
+      obsidianTldrGuide = 'In OBSIDIAN_TLDR, produce a thorough, example-rich long-form summary. Be generous — do NOT compress or cap the length. Use this structure:\n'
         + '**TLDR** — one sentence core thesis.\n'
-        + '**Key Value Points** — 5-8 actionable insights.\n'
-        + '**Process / Steps** — include only if instructional.\n'
-        + '**Why It Matters** — 1-2 sentences.\n'
+        + '**Key Value Points** — extract as many genuinely valuable insights as the article supports (aim for 6-10). Each point is a **bold headline** followed by 2-4 sentences, grounded in a direct quote, a named person/product/company, a specific number, or a concrete example from the text.\n'
+        + '**Process / Steps** — include only if instructional; number each step with specifics.\n'
+        + '**Why It Matters** — 2-3 sentences.\n'
+        + obsidianInsightGuide
         + '**Fact Check** with credibility score.';
     } else if (hasQuotedFull) {
       obsidianTldrGuide = 'In OBSIDIAN_TLDR, summarize both the bookmarked tweet and the quoted long post using this structure:\n'
         + '**TLDR**\n'
-        + '**Quoted Content Summary**\n'
+        + '**Quoted Content Summary** — extract every valuable point from the quoted post, each grounded in a concrete quote, name, number, or example.\n'
         + '**Process / Steps** (if applicable)\n'
         + '**Commenter\'s Take**\n'
+        + obsidianInsightGuide
         + '**Fact Check** with credibility score.';
     } else {
       obsidianTldrGuide = 'In OBSIDIAN_TLDR, provide a valuable structured tweet summary with this structure:\n'
         + '**TLDR**\n'
-        + '**Key Points**\n'
+        + '**Key Points** — grounded in concrete details (quotes, names, numbers) from the tweet.\n'
         + '**Process / Steps** (if applicable)\n'
+        + obsidianInsightGuide
         + '**Fact Check** with credibility score.';
     }
 
@@ -1181,6 +1314,7 @@ function buildPrompt(tweetData, articleContent, quotedFullContent, language, isA
       + '- Do not invent a new tag. Pick 1-2 from the allowed list.\n'
       + '- OBSIDIAN_TITLE must be plain text in one sentence.\n'
       + '- OBSIDIAN_RELEVANCE: 高 = directly about AI/startup/money, 中 = somewhat related, 低 = tangential.\n'
+      + '- Prioritize depth and completeness over brevity; never truncate valuable content to save space. The 创业启发 section is the most important — make it the richest part of the note.\n'
       + '- Keep markdown structure inside OBSIDIAN_TLDR.';
     return { system: obsidianInstruction, user: userContent };
   }
@@ -1202,18 +1336,22 @@ function buildPrompt(tweetData, articleContent, quotedFullContent, language, isA
       ? 'a WeChat public account long-form article'
       : 'an X Article (long-form post)';
     systemPrompt = 'You are an expert content analyst. The user bookmarked ' + platformArticleLabel + '. '
-      + 'Provide a thorough, high-value summary in ' + langName + '.\n\n'
+      + 'Provide a thorough, high-value, example-rich summary in ' + langName + '. Be generous — do NOT compress or cap the length.\n\n'
       + 'Format:\n'
       + '**TLDR** — one sentence capturing the core thesis.\n\n'
       + '**Key Value Points**\n'
-      + '- Extract 5-8 of the most valuable insights, actionable advice, data points, or frameworks from the article.\n'
+      + '- Extract as many genuinely valuable insights as the article supports (aim for 6-10): actionable advice, data points, or frameworks.\n'
+      + '- Ground EVERY point in a concrete detail from the text — a direct quote, a named person/product/company, a specific number, or a real example. Never write a generic point that could apply to any article.\n'
       + '- Each point should be self-contained and useful even without reading the original.\n'
       + '- Use **bold** for key terms, names, numbers, and takeaways.\n\n'
       + '**Process / Steps** (only if the article is a tutorial, how-to, or guide)\n'
       + '- List the step-by-step process or methodology described in the article.\n'
       + '- Number each step and include specifics (tools, parameters, commands, etc.).\n'
       + '- Skip this section entirely if the content is not instructional.\n\n'
-      + '**Why It Matters** — 1-2 sentences on the broader significance or who should care.\n'
+      + '**创业者/产品/技术方面的启发总结(本笔记的核心,请写得最充分)**\n'
+      + '- 用户做这份笔记是为了日后创业学习,这一段是重点。提炼尽可能多的启发(至少 5 条),每条用 **加粗小标题** 概括,再用多句展开。\n'
+      + '- 每条都必须落到文中具体实据(原话金句、点名的人物/公司/产品、具体数字或真实案例),并回答「这对创业者意味着什么、可以怎么用」,严禁空泛套话。\n\n'
+      + '**Why It Matters** — 2-3 sentences on the broader significance or who should care.\n'
       + factCheckBlock;
   } else if (hasQuotedFull) {
     systemPrompt = 'You are an expert content analyst. The user bookmarked a tweet that quotes/references a longer post. '
@@ -1318,18 +1456,19 @@ function parseObsidianAiOutput(aiText, tweetData, articleContent, quotedFullCont
 // ── LLM API calls ───────────────────────────────────────────────────────────────
 
 async function callOpenAI(apiKey, endpoint, model, prompt, maxTokens) {
+  var payload = {
+    model: model,
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+    temperature: 0.3,
+  };
+  if (maxTokens) payload.max_tokens = maxTokens; // 不传则走模型默认最大输出
   var res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.3,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     var err = await res.json().catch(function () { return {}; });
@@ -1353,7 +1492,7 @@ async function callClaude(apiKey, endpoint, model, prompt, maxTokens) {
     },
     body: JSON.stringify({
       model: model,
-      max_tokens: maxTokens,
+      max_tokens: maxTokens || 8192, // Claude 强制要求该字段,不限量时兜底
       system: prompt.system,
       messages: [{ role: 'user', content: prompt.user }],
     }),
@@ -1370,18 +1509,19 @@ async function callClaude(apiKey, endpoint, model, prompt, maxTokens) {
 }
 
 async function callKimi(apiKey, endpoint, model, prompt, maxTokens) {
+  var payload = {
+    model: model,
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+    temperature: 0.3,
+  };
+  if (maxTokens) payload.max_tokens = maxTokens; // 不传则走模型默认最大输出
   var res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.3,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     var err = await res.json().catch(function () { return {}; });
@@ -1395,18 +1535,19 @@ async function callKimi(apiKey, endpoint, model, prompt, maxTokens) {
 }
 
 async function callZhipu(apiKey, endpoint, model, prompt, maxTokens) {
+  var payload = {
+    model: model,
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+    temperature: 0.3,
+  };
+  if (maxTokens) payload.max_tokens = maxTokens; // 不传则走模型默认最大输出
   var res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.3,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     var err = await res.json().catch(function () { return {}; });
@@ -1420,18 +1561,19 @@ async function callZhipu(apiKey, endpoint, model, prompt, maxTokens) {
 }
 
 async function callQwen(apiKey, endpoint, model, prompt, maxTokens) {
+  var payload = {
+    model: model,
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+    temperature: 0.3,
+  };
+  if (maxTokens) payload.max_tokens = maxTokens; // 不传则走模型默认最大输出
   var res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.3,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     var err = await res.json().catch(function () { return {}; });
